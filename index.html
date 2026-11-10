@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BME280 BLE</title>
+<style>
+  body { font-family: sans-serif; background: #1e1e2e; color: #eee;
+         margin: 0; padding: 20px; text-align: center; }
+  h1 { font-size: 1.3em; color: #aaa; }
+  .card { background: #2a2a3e; border-radius: 16px; padding: 20px;
+          margin: 15px auto; max-width: 400px; }
+  .label { font-size: 1em; color: #aaa; }
+  .value { font-size: 2.8em; font-weight: bold; margin-top: 5px; }
+  .temp { color: #ff8a65; }
+  .hum  { color: #4fc3f7; }
+  .pres { color: #aed581; }
+  #btn { background: #4fc3f7; color: #1e1e2e; border: none;
+         border-radius: 12px; padding: 14px 28px; font-size: 1.1em;
+         font-weight: bold; margin: 10px; }
+  #status { font-size: 0.85em; color: #777; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <h1>🌡️ BME280 モニター (BLE)</h1>
+  <button id="btn">🔗 接続する</button>
+  <div class="card"><div class="label">温度</div>
+    <div class="value temp"><span id="t">--</span> °C</div></div>
+  <div class="card"><div class="label">湿度</div>
+    <div class="value hum"><span id="h">--</span> %</div></div>
+  <div class="card"><div class="label">気圧</div>
+    <div class="value pres"><span id="p">--</span> hPa</div></div>
+  <div id="status">未接続</div>
+
+<script>
+const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+let device = null;
+let buffer = '';
+let lastUpdate = 0;
+
+const $ = id => document.getElementById(id);
+const setStatus = text => { $('status').textContent = text; };
+
+// 1行ぶんのデータを解析して表示
+function handleLine(line) {
+  line = line.trim();
+  // テキストモード: T:24.3C H:45.2% P:1012.8hPa
+  let m = line.match(/T:(-?[\d.]+)C\s+H:(-?[\d.]+)%\s+P:(-?[\d.]+)hPa/);
+  if (m) {
+    $('t').textContent = parseFloat(m[1]).toFixed(1);
+    $('h').textContent = parseFloat(m[2]).toFixed(1);
+    $('p').textContent = parseFloat(m[3]).toFixed(1);
+    lastUpdate = Date.now();
+    return;
+  }
+  // グラフモード: 24.30,45.20（気圧なし）
+  m = line.match(/^(-?[\d.]+),(-?[\d.]+)$/);
+  if (m) {
+    $('t').textContent = parseFloat(m[1]).toFixed(1);
+    $('h').textContent = parseFloat(m[2]).toFixed(1);
+    lastUpdate = Date.now();
+  }
+}
+
+// 20バイトずつ分割されて届くので、改行まで溜めてから処理
+function onData(e) {
+  buffer += new TextDecoder().decode(e.target.value);
+  const lines = buffer.split('\n');
+  buffer = lines.pop();
+  lines.forEach(handleLine);
+  if (buffer.length > 200) buffer = '';
+}
+
+async function connectGatt() {
+  setStatus('接続中...');
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(NUS_SERVICE);
+  const tx = await service.getCharacteristic(NUS_TX);
+  tx.addEventListener('characteristicvaluechanged', onData);
+  await tx.startNotifications();
+  // 気圧も欲しいのでテキストモードに切り替え
+  try {
+    const rx = await service.getCharacteristic(NUS_RX);
+    await rx.writeValue(new TextEncoder().encode('t'));
+  } catch (e) {}
+  buffer = '';
+  setStatus('接続済み ✅ データ待ち...');
+  $('btn').style.display = 'none';
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('このブラウザはWeb Bluetooth非対応です（iPhoneはBluefyで開いてね）');
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [NUS_SERVICE] }, { namePrefix: 'ESP32-BME280' }],
+      optionalServices: [NUS_SERVICE]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    await connectGatt();
+  } catch (e) {
+    setStatus('接続失敗: ' + e.message);
+  }
+}
+
+// 切れたら自動で再接続を試す
+async function onDisconnected() {
+  setStatus('切断されました。再接続中...');
+  for (let i = 0; i < 5; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try { await connectGatt(); return; } catch (e) {}
+  }
+  setStatus('再接続できませんでした');
+  $('btn').style.display = '';
+}
+
+$('btn').addEventListener('click', connect);
+
+// 最終更新からの経過時間を表示
+setInterval(() => {
+  if (!lastUpdate || !device || !device.gatt.connected) return;
+  const sec = Math.floor((Date.now() - lastUpdate) / 1000);
+  setStatus(sec > 10
+    ? `⚠️ ${sec}秒間データが来てません`
+    : `接続済み ✅ 最終更新: ${sec}秒前`);
+}, 1000);
+</script>
+</body>
+</html>
