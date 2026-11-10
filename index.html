@@ -18,7 +18,9 @@
   #btn { background: #4fc3f7; color: #1e1e2e; border: none;
          border-radius: 12px; padding: 14px 28px; font-size: 1.1em;
          font-weight: bold; margin: 10px; }
-  #status { font-size: 0.85em; color: #777; margin-top: 20px; }
+  .info { font-size: 0.85em; color: #777; margin-top: 6px; }
+  .info.first { margin-top: 20px; }
+  .info.warn { color: #ff8a65; }
 </style>
 </head>
 <body>
@@ -30,12 +32,17 @@
     <div class="value hum"><span id="h">--</span> %</div></div>
   <div class="card"><div class="label">気圧</div>
     <div class="value pres"><span id="p">--</span> hPa</div></div>
-  <div id="status">未接続</div>
+
+  <div id="esp" class="info first">ESP32温度: -- °C</div>
+  <div id="mem" class="info">空きメモリ: -- KB</div>
+  <div id="status" class="info">未接続</div>
 
 <script>
 const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const ESP_HOT = 80;   // この温度(℃)以上でオレンジ表示
+const MEM_LOW = 30;   // 空きメモリがこのKB以下でオレンジ表示
 
 let device = null;
 let buffer = '';
@@ -44,19 +51,34 @@ let lastUpdate = 0;
 const $ = id => document.getElementById(id);
 const setStatus = text => { $('status').textContent = text; };
 
+function showEspTemp(v) {
+  $('esp').textContent = `ESP32温度: ${v.toFixed(1)} °C`;
+  $('esp').classList.toggle('warn', v >= ESP_HOT);
+}
+
+function showFreeMem(bytes) {
+  const kb = bytes / 1024;
+  $('mem').textContent = `空きメモリ: ${kb.toFixed(1)} KB`;
+  $('mem').classList.toggle('warn', kb <= MEM_LOW);
+}
+
 // 1行ぶんのデータを解析して表示
 function handleLine(line) {
   line = line.trim();
-  // テキストモード: T:24.3C H:45.2% P:1012.8hPa
-  let m = line.match(/T:(-?[\d.]+)C\s+H:(-?[\d.]+)%\s+P:(-?[\d.]+)hPa/);
+  // テキストモード: T:24.3C H:45.2% P:1012.8hPa E:63.3C M:182340（E・Mは無くてもOK）
+  let m = line.match(
+    /T:(-?[\d.]+)C\s+H:(-?[\d.]+)%\s+P:(-?[\d.]+)hPa(?:\s+E:(-?[\d.]+)C)?(?:\s+M:(\d+))?/
+  );
   if (m) {
     $('t').textContent = parseFloat(m[1]).toFixed(1);
     $('h').textContent = parseFloat(m[2]).toFixed(1);
     $('p').textContent = parseFloat(m[3]).toFixed(1);
+    if (m[4] !== undefined) showEspTemp(parseFloat(m[4]));
+    if (m[5] !== undefined) showFreeMem(parseInt(m[5], 10));
     lastUpdate = Date.now();
     return;
   }
-  // グラフモード: 24.30,45.20（気圧なし）
+  // グラフモード: 24.30,45.20（気圧・ESP情報なし）
   m = line.match(/^(-?[\d.]+),(-?[\d.]+)$/);
   if (m) {
     $('t').textContent = parseFloat(m[1]).toFixed(1);
@@ -81,7 +103,7 @@ async function connectGatt() {
   const tx = await service.getCharacteristic(NUS_TX);
   tx.addEventListener('characteristicvaluechanged', onData);
   await tx.startNotifications();
-  // 気圧も欲しいのでテキストモードに切り替え
+  // 気圧やESP情報も欲しいのでテキストモードに切り替え
   try {
     const rx = await service.getCharacteristic(NUS_RX);
     await rx.writeValue(new TextEncoder().encode('t'));
